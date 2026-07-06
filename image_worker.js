@@ -5,17 +5,27 @@ let modelsLoaded = false;
 
 async function ensureTFJSReady(taskId) {
   console.log(`[Worker ${taskId}] TFJS version: ${tf.version.tfjs}`);
-  try {
-    await tf.ready();
-    console.log(`[Worker ${taskId}] Default backend: ${tf.getBackend()}`);
-    console.log(`[Worker ${taskId}] Available backends:`, tf.engine().backendNames());
-    if (tf.getBackend() !== 'cpu') {
-      await tf.setBackend('cpu');
-      console.log(`[Worker ${taskId}] Switched to CPU backend`);
+  await tf.ready();
+  let backend = tf.getBackend();
+  console.log(`[Worker ${taskId}] Default backend: ${backend}`);
+  console.log(`[Worker ${taskId}] Available backends:`, tf.engine().backendNames());
+
+  if (backend === 'webgl') {
+    // WebGL supports fused tanh — keep it
+    console.log(`[Worker ${taskId}] WebGL available, keeping as backend`);
+    return;
+  }
+
+  if (backend === 'cpu') {
+    // CPU doesn't support fused tanh activation — try WASM
+    try {
+      await tf.setBackend('wasm');
+      backend = 'wasm';
+      console.log(`[Worker ${taskId}] Switched to WASM backend`);
+    } catch (e) {
+      console.warn(`[Worker ${taskId}] WASM unavailable (${e.message}), staying on CPU`);
+      console.warn(`[Worker ${taskId}] Model may fail: CPU backend lacks fused tanh`);
     }
-  } catch (e) {
-    console.warn(`[Worker ${taskId}] Backend init: ${e.message}`);
-    throw new Error(`TFJS init failed: ${e.message}`);
   }
 }
 
