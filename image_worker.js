@@ -99,8 +99,9 @@ async function predictEnsemble(thumbnailTensor) {
 
     for (let j = 0; j < Math.min(3, tensors.length); j++) {
       const vals = await tensors[j].data();
-      sums[j] += vals[0] || 0;
-      console.log(`[Worker] Model ${i+1} out[${j}] = ${(vals[0]||0).toFixed(4)}`);
+      const val = Math.tanh(vals[0] || 0);
+      sums[j] += val;
+      console.log(`[Worker] Model ${i+1} out[${j}] = ${val.toFixed(4)}`);
       tensors[j].dispose();
     }
   }
