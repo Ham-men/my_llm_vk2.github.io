@@ -1,4 +1,7 @@
-importScripts('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js');
+importScripts(
+  'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js',
+  'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@4.22.0/dist/tf-backend-wasm.min.js'
+);
 
 let models = [];
 let modelsLoaded = false;
@@ -11,20 +14,17 @@ async function ensureTFJSReady(taskId) {
   console.log(`[Worker ${taskId}] Available backends:`, tf.engine().backendNames());
 
   if (backend === 'webgl') {
-    // WebGL supports fused tanh — keep it
-    console.log(`[Worker ${taskId}] WebGL available, keeping as backend`);
+    console.log(`[Worker ${taskId}] WebGL available, using it for inference`);
     return;
   }
 
   if (backend === 'cpu') {
-    // CPU doesn't support fused tanh activation — try WASM
+    tf.wasm().setWasmPath('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@4.22.0/wasm-out/');
     try {
       await tf.setBackend('wasm');
-      backend = 'wasm';
       console.log(`[Worker ${taskId}] Switched to WASM backend`);
     } catch (e) {
-      console.warn(`[Worker ${taskId}] WASM unavailable (${e.message}), staying on CPU`);
-      console.warn(`[Worker ${taskId}] Model may fail: CPU backend lacks fused tanh`);
+      console.warn(`[Worker ${taskId}] WASM unavailable: ${e.message}`);
     }
   }
 }
