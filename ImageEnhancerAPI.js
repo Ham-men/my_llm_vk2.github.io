@@ -109,12 +109,17 @@ class ImageEnhancerAPI {
 
   _startWorker(task) {
     this.activeTaskId = task.id;
+    console.log(`[API] Starting worker for task ${task.id}, file=${task.fileName}`);
     this.worker = new Worker('image_worker.js');
 
     this.worker.onmessage = (e) => {
       const msg = e.data;
+      console.log(`[API] Worker message: type=${msg.type}, taskId=${msg.taskId}`, msg.type === 'error' ? `error=${msg.error}` : '');
       const t = this.tasks.get(msg.taskId);
-      if (!t) return;
+      if (!t) {
+        console.warn(`[API] Task ${msg.taskId} not found for message type=${msg.type}`);
+        return;
+      }
 
       if (msg.type === 'progress') {
         t.status = msg.status;
@@ -126,13 +131,16 @@ class ImageEnhancerAPI {
         t.resultBlob = msg.blob;
         t.params = msg.params || null;
         t.completedAt = Date.now();
+        console.log(`[API] Task ${task.id} completed, blob=${msg.blob ? msg.blob.size + 'bytes' : 'null'}, params=${JSON.stringify(msg.params)}`);
         this._emit('taskUpdated', t);
         this._cleanupWorker();
       } else if (msg.type === 'canceled') {
+        console.log(`[API] Task ${task.id} canceled`);
         t.status = 'canceled';
         this._emit('taskUpdated', t);
         this._cleanupWorker();
       } else if (msg.type === 'error') {
+        console.error(`[API] Task ${task.id} error: ${msg.error}`);
         t.status = 'error';
         t.error = msg.error;
         this._emit('taskUpdated', t);
@@ -141,15 +149,17 @@ class ImageEnhancerAPI {
     };
 
     this.worker.onerror = (err) => {
+      console.error(`[API] Worker unhandled error for task ${task.id}:`, err.message, err.lineno, err.filename);
       const t = this.tasks.get(task.id);
       if (t) {
         t.status = 'error';
-        t.error = err.message || 'Worker error';
+        t.error = `Worker error: ${err.message} (line ${err.lineno})`;
         this._emit('taskUpdated', t);
       }
       this._cleanupWorker();
     };
 
+    console.log(`[API] Sending process message to worker for task ${task.id}`);
     this.worker.postMessage({ type: 'process', taskId: task.id, imageBlob: task.imageBlob });
   }
 

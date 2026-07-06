@@ -117,6 +117,7 @@ h1 span { background: linear-gradient(135deg, #667eea, #764ba2); -webkit-backgro
 </div>
 
 <script>
+console.log('[UI] Page loaded, initializing API...');
 const api = new ImageEnhancerAPI(1);
 let pendingFiles = [];
 
@@ -173,7 +174,9 @@ function removeFile(idx) {
 
 document.getElementById('dropZone').onclick = () => document.getElementById('fileInput').click();
 document.getElementById('fileInput').onchange = async (e) => {
+  console.log(`[UI] Files selected: ${e.target.files.length}`);
   for (const file of e.target.files) {
+    console.log(`[UI] Reading file: ${file.name}, type=${file.type}, size=${file.size}`);
     const blob = await fileToBlob(file);
     addFileToGallery(file, blob);
   }
@@ -200,21 +203,25 @@ document.getElementById('urlInput').onkeydown = (e) => {
 };
 
 document.getElementById('processBtn').onclick = async () => {
-  if (pendingFiles.length === 0) return;
+  if (pendingFiles.length === 0) { console.log('[UI] Process clicked but no files'); return; }
 
+  console.log(`[UI] Processing ${pendingFiles.length} files...`);
   document.getElementById('processingSection').classList.remove('hidden');
 
   const ids = [];
   for (const item of pendingFiles) {
+    console.log(`[UI] Adding task for: ${item.name}, blob size: ${item.blob.size}`);
     const id = api.addTask(item.blob, item.name);
     ids.push(id);
   }
+  console.log(`[UI] Tasks created: ${ids.join(', ')}`);
   pendingFiles.forEach(item => URL.revokeObjectURL(item.url));
   pendingFiles = [];
   renderGallery();
 };
 
 api.on('taskUpdated', (task) => {
+  console.log(`[UI] taskUpdated: id=${task.id}, status=${task.status}, progress=${task.progress}, file=${task.fileName}`);
   renderTasks();
   if (task.status === 'completed') {
     renderResult(task);
@@ -233,12 +240,13 @@ function renderTasks() {
     return `
       <div class="task-item">
         <div class="task-header">
-          <span class="task-name">${t.fileName}</span>
+          <span class="task-name">${escapeHtml(t.fileName)}</span>
           <span class="task-status ${statusClass}">${getStatusLabel(t)}</span>
         </div>
         <div class="progress-bar">
           <div class="progress-fill" style="width:${t.progress}%"></div>
         </div>
+        ${t.error ? `<div style="font-size:12px;color:#f44336;margin-top:6px;word-break:break-all">${escapeHtml(t.error)}</div>` : ''}
       </div>
     `;
   }).join('');
@@ -260,7 +268,11 @@ function getStatusLabel(task) {
 }
 
 function renderResult(task) {
-  if (!task.imageBlob || !task.resultBlob) return;
+  if (!task.imageBlob || !task.resultBlob) {
+    console.warn(`[UI] renderResult skipped for ${task.id}: missing blob`, { imageBlob: !!task.imageBlob, resultBlob: !!task.resultBlob });
+    return;
+  }
+  console.log(`[UI] renderResult for ${task.id}, file=${task.fileName}`);
   const grid = document.getElementById('comparisonGrid');
   document.getElementById('resultsSection').classList.remove('hidden');
 

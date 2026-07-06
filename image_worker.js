@@ -4,7 +4,8 @@ let models = [];
 let modelsLoaded = false;
 
 async function ensureModelsLoaded(taskId) {
-  if (modelsLoaded) return;
+  if (modelsLoaded) { console.log(`[Worker ${taskId}] Models already loaded`); return; }
+  console.log(`[Worker ${taskId}] Loading models...`);
   const modelUrls = [
     './web_model_1/model.json',
     './web_model_2/model.json',
@@ -12,10 +13,17 @@ async function ensureModelsLoaded(taskId) {
   ];
   for (let i = 0; i < modelUrls.length; i++) {
     postMessage({ type: 'progress', taskId, status: 'loading_model', progress: Math.round(((i) / modelUrls.length) * 100) });
-    const m = await tf.loadGraphModel(modelUrls[i]);
-    models.push(m);
+    try {
+      const m = await tf.loadGraphModel(modelUrls[i]);
+      models.push(m);
+      console.log(`[Worker ${taskId}] Model ${i+1} loaded`);
+    } catch (e) {
+      console.error(`[Worker ${taskId}] Failed to load model ${i+1}:`, e);
+      throw new Error(`Model ${i+1} load failed: ${e.message}`);
+    }
   }
   modelsLoaded = true;
+  console.log(`[Worker ${taskId}] All models loaded`);
 }
 
 function createThumbnail(imageBitmap, size) {
@@ -37,21 +45,31 @@ function imageDataToTensor(imageData) {
 }
 
 async function predictEnsemble(thumbnailTensor) {
+  console.log(`[Worker] Predicting ensemble...`);
   const sums = [0, 0, 0];
   for (let i = 0; i < models.length; i++) {
-    const out = await models[i].predict(thumbnailTensor);
-    const vals = await Promise.all(out.map(t => t.data()));
-    tf.dispose(out);
-    sums[0] += vals[0][0];
-    sums[1] += vals[1][0];
-    sums[2] += vals[2][0];
+    try {
+      const out = await models[i].predict(thumbnailTensor);
+      const vals = await Promise.all(out.map(t => t.data()));
+      tf.dispose(out);
+      sums[0] += vals[0][0];
+      sums[1] += vals[1][0];
+      sums[2] += vals[2][0];
+      console.log(`[Worker] Model ${i+1}: brightness=${vals[0][0].toFixed(4)}, contrast=${vals[1][0].toFixed(4)}, saturation=${vals[2][0].toFixed(4)}`);
+    } catch (e) {
+      console.error(`[Worker] Model ${i+1} predict error:`, e);
+      throw e;
+    }
   }
-  return [sums[0] / models.length, sums[1] / models.length, sums[2] / models.length];
+  const avg = [sums[0] / models.length, sums[1] / models.length, sums[2] / models.length];
+  console.log(`[Worker] Ensemble avg: brightness=${avg[0].toFixed(4)}, contrast=${avg[1].toFixed(4)}, saturation=${avg[2].toFixed(4)}`);
+  return avg;
 }
 
 function applyAdjustments(imageBitmap, params, taskId, signal) {
   const [brightness, contrast, saturation] = params;
   const w = imageBitmap.width, h = imageBitmap.height;
+  console.log(`[Worker ${taskId}] Applying adjustments: ${w}x${h}, params=[${params.map(v=>v.toFixed(4))}]`);
   const canvas = new OffscreenCanvas(w, h);
   const ctx = canvas.getContext('2d');
   ctx.drawImage(imageBitmap, 0, 0);
@@ -121,11 +139,14 @@ function applyAdjustments(imageBitmap, params, taskId, signal) {
   }
 
   ctx.putImageData(imageData, 0, 0);
-  return canvas.transferToImageBitmap();
+  const result = canvas.transferToImageBitmap();
+  console.log(`[Worker ${taskId}] Adjustments applied`);
+  return result;
 }
 
 self.onmessage = async (e) => {
   const { type, taskId, imageBlob } = e.data;
+  console.log(`[Worker] Received message: type=${type}, taskId=${taskId}, blob=${imageBlob ? imageBlob.size + 'bytes' : 'null'}`);
 
   if (type === 'process') {
     const controller = new AbortController();
@@ -136,7 +157,9 @@ self.onmessage = async (e) => {
       await ensureModelsLoaded(taskId);
       postMessage({ type: 'progress', taskId, status: 'decoding', progress: 20 });
 
+      console.log(`[Worker ${taskId}] Decoding image...`);
       const bitmap = await createImageBitmap(imageBlob);
+      console.log(`[Worker ${taskId}] Decoded: ${bitmap.width}x${bitmap.height}`);
       postMessage({ type: 'progress', taskId, status: 'thumbnail', progress: 30 });
 
       const thumb = createThumbnail(bitmap, 224);
@@ -150,19 +173,24 @@ self.onmessage = async (e) => {
       const resultBitmap = applyAdjustments(bitmap, params, taskId, controller.signal);
 
       postMessage({ type: 'progress', taskId, status: 'encoding', progress: 95 });
+      console.log(`[Worker ${taskId}] Encoding result...`);
       const resultCanvas = new OffscreenCanvas(resultBitmap.width, resultBitmap.height);
       resultCanvas.getContext('2d').drawImage(resultBitmap, 0, 0);
       const blob = await resultCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.95 });
+      console.log(`[Worker ${taskId}] Result encoded: ${blob.size} bytes`);
 
       postMessage({ type: 'result', taskId, blob, params });
+      console.log(`[Worker ${taskId}] Done`);
     } catch (err) {
+      console.error(`[Worker ${taskId}] Error:`, err.name, err.message, err.stack);
       if (err.name === 'AbortError') {
         postMessage({ type: 'canceled', taskId });
       } else {
-        postMessage({ type: 'error', taskId, error: err.message });
+        postMessage({ type: 'error', taskId, error: err.message + ' | ' + err.stack });
       }
     }
   } else if (type === 'cancel') {
+    console.log(`[Worker] Cancel requested for ${taskId}`);
     if (self.__controller) {
       self.__controller.abort();
     }
