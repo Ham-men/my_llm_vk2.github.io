@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ML Image Enhancer</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="ImageEnhancerAPI.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; }
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+h1 { text-align: center; font-size: 28px; margin: 20px 0; color: #fff; }
+h1 span { background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+.upload-section { background: #1a1a2e; border-radius: 16px; padding: 30px; margin-bottom: 24px; border: 1px solid #2a2a4a; }
+.upload-area { border: 2px dashed #3a3a5a; border-radius: 12px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.3s; }
+.upload-area:hover { border-color: #667eea; background: rgba(102, 126, 234, 0.05); }
+.upload-area.dragover { border-color: #667eea; background: rgba(102, 126, 234, 0.1); }
+.upload-area svg { width: 48px; height: 48px; fill: #667eea; margin-bottom: 12px; }
+.upload-area p { font-size: 16px; color: #888; }
+.upload-area .hint { font-size: 13px; color: #555; margin-top: 8px; }
+
+.url-row { display: flex; gap: 12px; margin-top: 16px; }
+.url-row input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid #3a3a5a; background: #0f0f1a; color: #e0e0e0; font-size: 14px; outline: none; transition: border-color 0.3s; }
+.url-row input:focus { border-color: #667eea; }
+.url-row button { padding: 12px 24px; border-radius: 8px; border: none; background: #667eea; color: #fff; font-size: 14px; cursor: pointer; transition: background 0.3s; white-space: nowrap; }
+.url-row button:hover { background: #5a6fd6; }
+
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 16px; }
+.gallery-item { position: relative; border-radius: 8px; overflow: hidden; background: #0f0f1a; border: 1px solid #2a2a4a; }
+.gallery-item img { width: 100%; height: 150px; object-fit: cover; display: block; }
+.gallery-item .remove { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%; border: none; background: rgba(0,0,0,0.6); color: #fff; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+.gallery-item .filename { padding: 6px 8px; font-size: 12px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.processing-section { background: #1a1a2e; border-radius: 16px; padding: 24px; margin-bottom: 24px; border: 1px solid #2a2a4a; }
+.task-list { display: flex; flex-direction: column; gap: 12px; }
+.task-item { background: #0f0f1a; border-radius: 8px; padding: 14px 16px; border: 1px solid #2a2a4a; }
+.task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.task-name { font-size: 14px; color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+.task-status { font-size: 13px; padding: 2px 10px; border-radius: 10px; }
+.status-queued { background: #2a2a4a; color: #888; }
+.status-loading_model { background: #2a2a4a; color: #aaa; }
+.status-decoding { background: #3a2a4a; color: #b8a; }
+.status-thumbnail { background: #2a3a4a; color: #8ab; }
+.status-predicting { background: #2a4a3a; color: #8ba; }
+.status-applying { background: #3a4a2a; color: #ab8; }
+.status-encoding { background: #4a3a2a; color: #ba8; }
+.status-completed { background: #1a4a2a; color: #4caf50; }
+.status-error { background: #4a1a1a; color: #f44336; }
+.status-canceled { background: #3a3a2a; color: #aaa; }
+
+.progress-bar { height: 4px; border-radius: 2px; background: #2a2a4a; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, #667eea, #764ba2); transition: width 0.3s ease; }
+
+.results-section { background: #1a1a2e; border-radius: 16px; padding: 24px; border: 1px solid #2a2a4a; }
+.comparison-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }
+.comparison-card { background: #0f0f1a; border-radius: 12px; padding: 16px; border: 1px solid #2a2a4a; }
+.comparison-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #aaa; }
+.comparison-images { display: flex; gap: 8px; }
+.comparison-images .img-wrap { flex: 1; }
+.comparison-images .img-wrap label { display: block; font-size: 11px; color: #666; margin-bottom: 4px; text-align: center; }
+.comparison-images img { width: 100%; height: 180px; object-fit: cover; border-radius: 6px; }
+.comparison-params { margin-top: 8px; display: flex; gap: 12px; justify-content: center; font-size: 12px; color: #666; }
+.comparison-params span { background: #1a1a2e; padding: 2px 10px; border-radius: 4px; }
+.params-b { color: #667eea; }
+.params-c { color: #764ba2; }
+.params-s { color: #4caf50; }
+.download-btn { display: block; margin-top: 10px; padding: 6px 16px; border-radius: 6px; border: none; background: #667eea; color: #fff; font-size: 12px; cursor: pointer; transition: background 0.3s; width: 100%; }
+.download-btn:hover { background: #5a6fd6; }
+
+.btn-primary { padding: 12px 32px; border-radius: 8px; border: none; background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; font-size: 15px; cursor: pointer; transition: opacity 0.3s; }
+.btn-primary:hover { opacity: 0.9; }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.section-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; color: #fff; }
+.hidden { display: none; }
+
+.actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+.actions .file-count { font-size: 14px; color: #888; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1><span>ML</span> Image Enhancer</h1>
+
+  <div class="upload-section">
+    <div class="upload-area" id="dropZone">
+      <svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+      <p>Нажмите для выбора или перетащите изображения</p>
+      <p class="hint">Поддерживаемые форматы: JPG, PNG, BMP, HEIC, WEBP</p>
+      <input type="file" id="fileInput" multiple accept="image/*" style="display:none">
+    </div>
+
+    <div class="url-row">
+      <input type="text" id="urlInput" placeholder="Вставьте ссылку на изображение из интернета...">
+      <button id="urlBtn">Загрузить по ссылке</button>
+    </div>
+
+    <div id="gallery" class="gallery"></div>
+
+    <div class="actions" id="actionsBar">
+      <button class="btn-primary" id="processBtn" disabled>Обработать все</button>
+      <span class="file-count" id="fileCount">Выбрано: 0</span>
+    </div>
+  </div>
+
+  <div id="processingSection" class="processing-section hidden">
+    <div class="section-title">Обработка</div>
+    <div class="task-list" id="taskList"></div>
+  </div>
+
+  <div id="resultsSection" class="results-section hidden">
+    <div class="section-title">Результаты</div>
+    <div class="comparison-grid" id="comparisonGrid"></div>
+  </div>
+</div>
+
+<script>
+const api = new ImageEnhancerAPI(1);
+let pendingFiles = [];
+
+function fileToBlob(file) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const blob = new Blob([e.target.result], { type: file.type || 'image/jpeg' });
+      resolve(blob);
+    };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function addFileToGallery(file, blob) {
+  const url = URL.createObjectURL(blob);
+  pendingFiles.push({ file, blob, url, name: file.name });
+  renderGallery();
+}
+
+async function addUrlImage(url) {
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    const name = url.split('/').pop().split('?')[0] || 'image.jpg';
+    const fileUrl = URL.createObjectURL(blob);
+    pendingFiles.push({ file: null, blob, url: fileUrl, name, sourceUrl: url });
+    renderGallery();
+  } catch (err) {
+    alert('Не удалось загрузить изображение по ссылке');
+  }
+}
+
+function renderGallery() {
+  const gallery = document.getElementById('gallery');
+  if (pendingFiles.length === 0) { gallery.innerHTML = ''; return; }
+  gallery.innerHTML = pendingFiles.map((item, idx) => `
+    <div class="gallery-item">
+      <img src="${item.url}" alt="${item.name}">
+      <button class="remove" onclick="removeFile(${idx})">&times;</button>
+      <div class="filename">${item.name}</div>
+    </div>
+  `).join('');
+  document.getElementById('fileCount').textContent = `Выбрано: ${pendingFiles.length}`;
+  document.getElementById('processBtn').disabled = pendingFiles.length === 0;
+}
+
+function removeFile(idx) {
+  const item = pendingFiles[idx];
+  URL.revokeObjectURL(item.url);
+  pendingFiles.splice(idx, 1);
+  renderGallery();
+}
+
+document.getElementById('dropZone').onclick = () => document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange = async (e) => {
+  for (const file of e.target.files) {
+    const blob = await fileToBlob(file);
+    addFileToGallery(file, blob);
+  }
+  e.target.value = '';
+};
+document.getElementById('dropZone').ondragover = (e) => { e.preventDefault(); document.getElementById('dropZone').classList.add('dragover'); };
+document.getElementById('dropZone').ondragleave = () => document.getElementById('dropZone').classList.remove('dragover');
+document.getElementById('dropZone').ondrop = async (e) => {
+  e.preventDefault();
+  document.getElementById('dropZone').classList.remove('dragover');
+  for (const file of e.dataTransfer.files) {
+    if (file.type.startsWith('image/')) {
+      const blob = await fileToBlob(file);
+      addFileToGallery(file, blob);
+    }
+  }
+};
+document.getElementById('urlBtn').onclick = () => {
+  const url = document.getElementById('urlInput').value.trim();
+  if (url) addUrlImage(url);
+};
+document.getElementById('urlInput').onkeydown = (e) => {
+  if (e.key === 'Enter') document.getElementById('urlBtn').click();
+};
+
+document.getElementById('processBtn').onclick = async () => {
+  if (pendingFiles.length === 0) return;
+
+  document.getElementById('processingSection').classList.remove('hidden');
+
+  const ids = [];
+  for (const item of pendingFiles) {
+    const id = api.addTask(item.blob, item.name);
+    ids.push(id);
+  }
+  pendingFiles.forEach(item => URL.revokeObjectURL(item.url));
+  pendingFiles = [];
+  renderGallery();
+};
+
+api.on('taskUpdated', (task) => {
+  renderTasks();
+  if (task.status === 'completed') {
+    renderResult(task);
+  }
+  if (['error', 'canceled'].includes(task.status)) {
+    renderTasks();
+  }
+});
+
+function renderTasks() {
+  const allTasks = api.getAllTasks();
+  const list = document.getElementById('taskList');
+  if (allTasks.length === 0) return;
+  list.innerHTML = allTasks.map(t => {
+    const statusClass = 'status-' + t.status.replace(/[^a-z0-9]/g, '_');
+    return `
+      <div class="task-item">
+        <div class="task-header">
+          <span class="task-name">${t.fileName}</span>
+          <span class="task-status ${statusClass}">${getStatusLabel(t)}</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width:${t.progress}%"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+  const allDone = allTasks.every(t => ['completed','error','canceled'].includes(t.status));
+  if (allDone && allTasks.length > 0) {
+    setTimeout(() => {
+      document.getElementById('processingSection').classList.add('hidden');
+    }, 800);
+  }
+}
+
+function getStatusLabel(task) {
+  const labels = {
+    queued: 'В очереди', loading_model: 'Загрузка модели', decoding: 'Декодирование',
+    thumbnail: 'Создание миниатюры', predicting: 'Предсказание', applying: 'Применение фильтров',
+    encoding: 'Кодирование', completed: 'Готово', error: 'Ошибка', canceled: 'Отменено',
+  };
+  return labels[task.status] || task.status;
+}
+
+function renderResult(task) {
+  if (!task.imageBlob || !task.resultBlob) return;
+  const grid = document.getElementById('comparisonGrid');
+  document.getElementById('resultsSection').classList.remove('hidden');
+
+  const beforeUrl = URL.createObjectURL(task.imageBlob);
+  const afterUrl = URL.createObjectURL(task.resultBlob);
+  const params = task.params ? task.params.map(v => (v * 100).toFixed(1)) : ['?', '?', '?'];
+
+  const card = document.createElement('div');
+  card.className = 'comparison-card';
+  card.innerHTML = `
+    <div class="comparison-title">${escapeHtml(task.fileName)}</div>
+    <div class="comparison-images">
+      <div class="img-wrap"><label>До</label><img src="${beforeUrl}"></div>
+      <div class="img-wrap"><label>После</label><img src="${afterUrl}"></div>
+    </div>
+    <div class="comparison-params">
+      <span class="params-b">Яркость: ${params[0]}%</span>
+      <span class="params-c">Контраст: ${params[1]}%</span>
+      <span class="params-s">Насыщенность: ${params[2]}%</span>
+    </div>
+    <button class="download-btn" onclick="downloadResult('${task.id}')">Скачать</button>
+  `;
+  grid.appendChild(card);
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function downloadResult(taskId) {
+  api.getResult(taskId).then(blob => {
+    const task = api.tasks.get(taskId);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'enhanced_' + (task ? task.fileName : 'image.jpg');
+    a.click();
+  });
+}
+</script>
+</body>
+</html>

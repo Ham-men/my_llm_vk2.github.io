@@ -1,0 +1,8 @@
+{
+  "num_models": 3,
+  "classes": [
+    "brightness",
+    "contrast",
+    "saturation"
+  ]
+}
