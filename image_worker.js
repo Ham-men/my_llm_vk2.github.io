@@ -1,11 +1,30 @@
-importScripts('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js');
+importScripts('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js');
 
 let models = [];
 let modelsLoaded = false;
 
+async function ensureTFJSReady(taskId) {
+  console.log(`[Worker ${taskId}] TFJS version: ${tf.version.tfjs}`);
+  try {
+    await tf.ready();
+    console.log(`[Worker ${taskId}] Default backend: ${tf.getBackend()}`);
+    console.log(`[Worker ${taskId}] Available backends:`, tf.engine().backendNames());
+    if (tf.getBackend() !== 'cpu') {
+      await tf.setBackend('cpu');
+      console.log(`[Worker ${taskId}] Switched to CPU backend`);
+    }
+  } catch (e) {
+    console.warn(`[Worker ${taskId}] Backend init: ${e.message}`);
+    throw new Error(`TFJS init failed: ${e.message}`);
+  }
+}
+
 async function ensureModelsLoaded(taskId) {
-  if (modelsLoaded) { console.log(`[Worker ${taskId}] Models already loaded`); return; }
+  if (modelsLoaded) { return; }
   console.log(`[Worker ${taskId}] Loading models...`);
+
+  await ensureTFJSReady(taskId);
+
   const modelUrls = [
     './web_model_1/model.json',
     './web_model_2/model.json',
@@ -14,9 +33,11 @@ async function ensureModelsLoaded(taskId) {
   for (let i = 0; i < modelUrls.length; i++) {
     postMessage({ type: 'progress', taskId, status: 'loading_model', progress: Math.round(((i) / modelUrls.length) * 100) });
     try {
-      const m = await tf.loadGraphModel(modelUrls[i]);
-      models.push(m);
+      const m = await tf.loadGraphModel(modelUrls[i], { fromTFHub: false });
       console.log(`[Worker ${taskId}] Model ${i+1} loaded`);
+      console.log(`[Worker ${taskId}] Model ${i+1} input:`, JSON.stringify(m.inputs));
+      console.log(`[Worker ${taskId}] Model ${i+1} output:`, JSON.stringify(m.outputs));
+      models.push(m);
     } catch (e) {
       console.error(`[Worker ${taskId}] Failed to load model ${i+1}:`, e);
       throw new Error(`Model ${i+1} load failed: ${e.message}`);
@@ -45,108 +66,106 @@ function imageDataToTensor(imageData) {
 }
 
 async function predictEnsemble(thumbnailTensor) {
-  console.log(`[Worker] Predicting ensemble...`);
+  console.log(`[Worker] Predict ensemble input shape: ${thumbnailTensor.shape}`);
   const sums = [0, 0, 0];
+
   for (let i = 0; i < models.length; i++) {
-    try {
-      const out = await models[i].predict(thumbnailTensor);
-      const vals = await Promise.all(out.map(t => t.data()));
-      tf.dispose(out);
-      sums[0] += vals[0][0];
-      sums[1] += vals[1][0];
-      sums[2] += vals[2][0];
-      console.log(`[Worker] Model ${i+1}: brightness=${vals[0][0].toFixed(4)}, contrast=${vals[1][0].toFixed(4)}, saturation=${vals[2][0].toFixed(4)}`);
-    } catch (e) {
-      console.error(`[Worker] Model ${i+1} predict error:`, e);
-      throw e;
+    console.log(`[Worker] Model ${i+1} executing...`);
+
+    const out = await models[i].executeAsync(thumbnailTensor);
+    console.log(`[Worker] Model ${i+1} output type: ${typeof out}`);
+
+    let tensors = [];
+    if (out instanceof tf.Tensor) {
+      tensors = [out];
+    } else if (out && typeof out === 'object') {
+      if (out.constructor && out.constructor.name === 'Map') {
+        tensors = Array.from(out.values());
+      } else {
+        tensors = Object.values(out);
+      }
+    }
+    console.log(`[Worker] Model ${i+1} got ${tensors.length} output tensors`);
+
+    for (let j = 0; j < Math.min(3, tensors.length); j++) {
+      const vals = await tensors[j].data();
+      sums[j] += vals[0] || 0;
+      console.log(`[Worker] Model ${i+1} out[${j}] = ${(vals[0]||0).toFixed(4)}`);
+      tensors[j].dispose();
     }
   }
-  const avg = [sums[0] / models.length, sums[1] / models.length, sums[2] / models.length];
-  console.log(`[Worker] Ensemble avg: brightness=${avg[0].toFixed(4)}, contrast=${avg[1].toFixed(4)}, saturation=${avg[2].toFixed(4)}`);
+
+  const avg = sums.map(s => s / models.length);
+  console.log(`[Worker] Ensemble: brightness=${avg[0].toFixed(4)} contrast=${avg[1].toFixed(4)} saturation=${avg[2].toFixed(4)}`);
   return avg;
 }
 
 function applyAdjustments(imageBitmap, params, taskId, signal) {
   const [brightness, contrast, saturation] = params;
   const w = imageBitmap.width, h = imageBitmap.height;
-  console.log(`[Worker ${taskId}] Applying adjustments: ${w}x${h}, params=[${params.map(v=>v.toFixed(4))}]`);
   const canvas = new OffscreenCanvas(w, h);
   const ctx = canvas.getContext('2d');
   ctx.drawImage(imageBitmap, 0, 0);
   const imageData = ctx.getImageData(0, 0, w, h);
   const data = imageData.data;
 
-  const bAdj = brightness * 50;
+  const bAdj = brightness * 60;
   const cFactor = contrast;
   const sAdj = saturation;
 
   const totalPixels = w * h;
-  const chunkSize = Math.max(1000, Math.floor(totalPixels / 30));
+  const chunkPixels = Math.max(1000, Math.floor(totalPixels / 30));
   const cMul = (259 * (cFactor * 128 + 255)) / (255 * (259 - cFactor * 128));
 
   for (let i = 0; i < data.length; i += 4) {
     let r = data[i], g = data[i + 1], b = data[i + 2];
 
-    if (sAdj !== 0) {
-      const max = Math.max(r, g, b) / 255;
-      const min = Math.min(r, g, b) / 255;
+    if (Math.abs(sAdj) > 0.001) {
+      const rf = r / 255, gf = g / 255, bf = b / 255;
+      const max = Math.max(rf, gf, bf), min = Math.min(rf, gf, bf);
       const delta = max - min;
       if (delta > 0.001) {
         const L = (max + min) / 2;
         const S = L > 0.5 ? delta / (2 - max - min) : delta / (max + min);
-        const newS = Math.min(1, Math.max(0, S * (1 + sAdj)));
-        if (newS > 0 && S > 0) {
-          const ratio = newS / S;
-          const rF = r / 255, gF = g / 255, bF = b / 255;
-          const newR = L > 0.5
-            ? L + (rF - L) * (2 - max - min) * ratio / delta
-            : L + (rF - L) * (max + min) * ratio / delta;
-          const newG = L > 0.5
-            ? L + (gF - L) * (2 - max - min) * ratio / delta
-            : L + (gF - L) * (max + min) * ratio / delta;
-          const newB = L > 0.5
-            ? L + (bF - L) * (2 - max - min) * ratio / delta
-            : L + (bF - L) * (max + min) * ratio / delta;
-          r = Math.round(Math.max(0, Math.min(255, newR * 255)));
-          g = Math.round(Math.max(0, Math.min(255, newG * 255)));
-          b = Math.round(Math.max(0, Math.min(255, newB * 255)));
-        }
+        const newS = Math.min(1, Math.max(0.001, S * (1 + sAdj)));
+        const ratio = newS / S;
+        const newR = L + (rf - L) * ratio;
+        const newG = L + (gf - L) * ratio;
+        const newB = L + (bf - L) * ratio;
+        r = Math.round(Math.max(0, Math.min(255, newR * 255)));
+        g = Math.round(Math.max(0, Math.min(255, newG * 255)));
+        b = Math.round(Math.max(0, Math.min(255, newB * 255)));
       }
     }
 
-    if (cFactor !== 0) {
-      r = Math.max(0, Math.min(255, cMul * (r - 128) + 128));
-      g = Math.max(0, Math.min(255, cMul * (g - 128) + 128));
-      b = Math.max(0, Math.min(255, cMul * (b - 128) + 128));
+    if (Math.abs(cFactor) > 0.001) {
+      r = Math.max(0, Math.min(255, (cMul * (r - 128) + 128)));
+      g = Math.max(0, Math.min(255, (cMul * (g - 128) + 128)));
+      b = Math.max(0, Math.min(255, (cMul * (b - 128) + 128)));
     }
 
-    if (bAdj !== 0) {
+    if (Math.abs(bAdj) > 0.5) {
       r = Math.max(0, Math.min(255, r + bAdj));
       g = Math.max(0, Math.min(255, g + bAdj));
       b = Math.max(0, Math.min(255, b + bAdj));
     }
 
-    data[i] = r;
-    data[i + 1] = g;
-    data[i + 2] = b;
+    data[i] = r; data[i + 1] = g; data[i + 2] = b;
 
-    const processed = (i / 4) + 1;
-    if (processed % chunkSize === 0) {
-      const pct = Math.round(50 + (processed / totalPixels) * 45);
+    const px = (i / 4) + 1;
+    if (px % chunkPixels === 0) {
+      const pct = Math.round(50 + (px / totalPixels) * 45);
       postMessage({ type: 'progress', taskId, status: 'applying', progress: pct });
-      if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     }
   }
 
   ctx.putImageData(imageData, 0, 0);
-  const result = canvas.transferToImageBitmap();
-  console.log(`[Worker ${taskId}] Adjustments applied`);
-  return result;
+  return canvas.transferToImageBitmap();
 }
 
 self.onmessage = async (e) => {
   const { type, taskId, imageBlob } = e.data;
-  console.log(`[Worker] Received message: type=${type}, taskId=${taskId}, blob=${imageBlob ? imageBlob.size + 'bytes' : 'null'}`);
 
   if (type === 'process') {
     const controller = new AbortController();
@@ -155,11 +174,9 @@ self.onmessage = async (e) => {
     try {
       postMessage({ type: 'progress', taskId, status: 'loading_model', progress: 0 });
       await ensureModelsLoaded(taskId);
-      postMessage({ type: 'progress', taskId, status: 'decoding', progress: 20 });
 
-      console.log(`[Worker ${taskId}] Decoding image...`);
+      postMessage({ type: 'progress', taskId, status: 'decoding', progress: 20 });
       const bitmap = await createImageBitmap(imageBlob);
-      console.log(`[Worker ${taskId}] Decoded: ${bitmap.width}x${bitmap.height}`);
       postMessage({ type: 'progress', taskId, status: 'thumbnail', progress: 30 });
 
       const thumb = createThumbnail(bitmap, 224);
@@ -171,28 +188,22 @@ self.onmessage = async (e) => {
       postMessage({ type: 'progress', taskId, status: 'applying', progress: 50 });
 
       const resultBitmap = applyAdjustments(bitmap, params, taskId, controller.signal);
-
       postMessage({ type: 'progress', taskId, status: 'encoding', progress: 95 });
-      console.log(`[Worker ${taskId}] Encoding result...`);
+
       const resultCanvas = new OffscreenCanvas(resultBitmap.width, resultBitmap.height);
       resultCanvas.getContext('2d').drawImage(resultBitmap, 0, 0);
       const blob = await resultCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.95 });
-      console.log(`[Worker ${taskId}] Result encoded: ${blob.size} bytes`);
 
       postMessage({ type: 'result', taskId, blob, params });
-      console.log(`[Worker ${taskId}] Done`);
     } catch (err) {
-      console.error(`[Worker ${taskId}] Error:`, err.name, err.message, err.stack);
+      console.error(`[Worker ${taskId}] Error: ${err.name}: ${err.message}`, err.stack);
       if (err.name === 'AbortError') {
         postMessage({ type: 'canceled', taskId });
       } else {
-        postMessage({ type: 'error', taskId, error: err.message + ' | ' + err.stack });
+        postMessage({ type: 'error', taskId, error: `${err.name}: ${err.message}\n${err.stack}` });
       }
     }
   } else if (type === 'cancel') {
-    console.log(`[Worker] Cancel requested for ${taskId}`);
-    if (self.__controller) {
-      self.__controller.abort();
-    }
+    if (self.__controller) { self.__controller.abort(); }
   }
 };
